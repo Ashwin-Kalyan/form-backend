@@ -1,6 +1,7 @@
 """
 COMPLETE WORKING Flask Backend for Form Submission
 FINAL PATH: /etc/secrets/nortiq-forms-65b5a63e6217.json
+UPDATED: Email function with timeout prevention
 """
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -11,6 +12,8 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime
 import time
+import threading
+from queue import Queue, Empty
 
 # Try to import Google Sheets
 try:
@@ -31,6 +34,9 @@ GOOGLE_SHEET_KEY = os.getenv("GOOGLE_SHEET_KEY", "")
 
 # FINAL credentials file path - EXACT PATH
 CREDENTIALS_FILE_PATH = "/etc/secrets/nortiq-forms-65b5a63e6217.json"
+
+# Email queue for async processing
+email_queue = Queue()
 
 @app.route('/')
 def home():
@@ -294,14 +300,18 @@ def save_to_google_sheets(data):
         traceback.print_exc()
         return False
 
-def send_confirmation_email(to_email, name):
-    """Send confirmation email"""
-    if not EMAIL_USER or not EMAIL_PASSWORD:
-        print("❌ Email credentials not configured")
-        return False
-    
+def send_confirmation_email_async(to_email, name):
+    """Send confirmation email ASYNC - no timeout blocking"""
     try:
-        print(f"📧 Sending email to {to_email}...")
+        print(f"📧 [ASYNC] Starting email send to {to_email}...")
+        
+        if not EMAIL_USER or not EMAIL_PASSWORD:
+            print(f"❌ [ASYNC] Email credentials not configured")
+            return False
+        
+        # SMTP configuration with reduced timeouts
+        smtp_server = 'smtp.gmail.com'
+        smtp_port = 587
         
         subject = "本日のブース訪問、ありがとうございます / Thanks for visiting our booth today!"
         
@@ -353,29 +363,74 @@ def send_confirmation_email(to_email, name):
         msg['To'] = to_email
         msg.attach(MIMEText(html_content, 'html'))
         
-        with smtplib.SMTP('smtp.gmail.com', 587) as server:
-            server.starttls()
-            server.login(EMAIL_USER, EMAIL_PASSWORD)
-            server.send_message(msg)
+        # SMTP with timeout settings
+        server = smtplib.SMTP(timeout=10)  # 10 second timeout
+        server.connect(smtp_server, smtp_port)
+        server.starttls()
+        server.login(EMAIL_USER, EMAIL_PASSWORD)
+        server.send_message(msg)
+        server.quit()
         
-        print(f"✅ Email sent to {to_email}")
+        print(f"✅ [ASYNC] Email sent to {to_email}")
         return True
         
     except smtplib.SMTPAuthenticationError:
-        print("❌ SMTP Auth Failed: Use App Password, not regular password")
+        print("❌ [ASYNC] SMTP Auth Failed: Use App Password, not regular password")
+        return False
+    except smtplib.SMTPException as e:
+        print(f"❌ [ASYNC] SMTP Error: {e}")
         return False
     except Exception as e:
-        print(f"❌ Email error: {type(e).__name__}: {e}")
+        print(f"❌ [ASYNC] Unexpected error: {type(e).__name__}: {str(e)[:100]}")
+        return False
+
+def background_email_worker():
+    """Background worker for sending emails"""
+    while True:
+        try:
+            # Get email task from queue (with timeout)
+            task = email_queue.get(timeout=30)  # Wait 30 seconds for task
+            if task is None:  # Sentinel to stop worker
+                break
+                
+            to_email, name = task
+            send_confirmation_email_async(to_email, name)
+            email_queue.task_done()
+            
+        except Empty:
+            # No tasks in queue, continue waiting
+            continue
+        except Exception as e:
+            print(f"❌ [WORKER] Error: {e}")
+            continue
+
+# Start background email worker thread
+email_worker_thread = threading.Thread(target=background_email_worker, daemon=True)
+email_worker_thread.start()
+print("✅ Background email worker started")
+
+def queue_email_task(to_email, name):
+    """Queue email task for background processing"""
+    if not to_email:
+        print("⚠️ No email address to queue")
+        return False
+    
+    try:
+        email_queue.put((to_email, name))
+        print(f"📨 [QUEUE] Email queued for {to_email}")
+        return True
+    except Exception as e:
+        print(f"❌ [QUEUE] Failed to queue email: {e}")
         return False
 
 @app.route('/submit', methods=['POST', 'OPTIONS'])
 def submit_form():
-    """Handle form submission"""
+    """Handle form submission - ASYNC EMAIL QUEUE VERSION"""
     if request.method == 'OPTIONS':
         return '', 200
     
     print("\n" + "="*60)
-    print("📝 FORM SUBMISSION - FINAL VERSION")
+    print("📝 FORM SUBMISSION - ASYNC EMAIL QUEUE")
     print("="*60)
     
     try:
@@ -386,33 +441,36 @@ def submit_form():
         print(f"👤 Name: {data.get('fullName', 'Unknown')}")
         print(f"📧 Email: {data.get('email', 'No email')}")
         
-        # Save to Google Sheets
+        # Save to Google Sheets (synchronous - should be fast)
         sheets_success = False
         if GOOGLE_SHEET_KEY and SHEETS_AVAILABLE:
             sheets_success = save_to_google_sheets(data)
         else:
             print("⚠️ Google Sheets: Not configured")
         
-        # Send email
-        email_success = False
+        # Queue email for background sending (ASYNC - no timeout!)
+        email_queued = False
         email = data.get('email', '')
         name = data.get('fullName', 'User')
         
         if email:
             if EMAIL_USER and EMAIL_PASSWORD:
-                email_success = send_confirmation_email(email, name)
+                email_queued = queue_email_task(email, name)
+                print(f"📨 Email queued: {email_queued}")
             else:
                 print("⚠️ Email: Not configured")
         else:
             print("⚠️ Email: No address provided")
         
+        # Immediate response - don't wait for email
         response = {
             'success': True,
-            'message': 'Form submitted',
+            'message': 'Form submitted successfully! Email queued for sending.',
             'sheets_saved': sheets_success,
-            'email_sent': email_success,
+            'email_queued': email_queued,
+            'note': 'Email is being sent in the background',
             'timestamp': datetime.now().isoformat(),
-            'version': 'FINAL',
+            'version': 'ASYNC-EMAIL-QUEUE',
             'credentials_file': 'nortiq-forms-65b5a63e6217.json'
         }
         
@@ -430,7 +488,7 @@ def submit_form():
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 10000))
     print("\n" + "="*60)
-    print("🚀 FORM BACKEND - FINAL VERSION")
+    print("🚀 FORM BACKEND - ASYNC EMAIL QUEUE VERSION")
     print("="*60)
     print(f"📍 Port: {port}")
     print(f"📧 Email: {'✅ CONFIGURED' if EMAIL_USER and EMAIL_PASSWORD else '❌ NOT CONFIGURED'}")
@@ -438,6 +496,7 @@ if __name__ == '__main__':
     print(f"📁 Credentials: {CREDENTIALS_FILE_PATH}")
     print(f"📁 File Exists: {'✅ YES' if os.path.exists(CREDENTIALS_FILE_PATH) else '❌ NO - Upload to Render Secret Files'}")
     print(f"📚 Sheets Lib: {'✅ AVAILABLE' if SHEETS_AVAILABLE else '❌ MISSING'}")
+    print(f"📨 Email Queue: {'✅ ACTIVE' if email_worker_thread.is_alive() else '❌ INACTIVE'}")
     print("="*60)
     print("💡 Upload credentials to Render → Environment → Secret Files")
     print(f"💡 Mount Path: {CREDENTIALS_FILE_PATH}")

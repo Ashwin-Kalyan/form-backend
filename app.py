@@ -1,6 +1,6 @@
 """
 COMPLETE WORKING Flask Backend for Form Submission
-Google Sheets + Email sending - FIXED VERSION
+Uses Secret File: /etc/secrets/credentials.json
 """
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -27,18 +27,23 @@ CORS(app)
 EMAIL_USER = os.getenv("EMAIL_USER", "")
 EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD", "")
 GOOGLE_SHEET_KEY = os.getenv("GOOGLE_SHEET_KEY", "")
-GOOGLE_CREDENTIALS_JSON = os.getenv("GOOGLE_CREDENTIALS_JSON", "")
+
+# Credentials file path - Render Secret Files location
+CREDENTIALS_FILE_PATH = "/etc/secrets/credentials.json"
 
 @app.route('/')
 def home():
     return jsonify({
         'status': 'ok',
         'service': 'Form Submission Backend',
-        'features': {
+        'config': {
             'email': bool(EMAIL_USER and EMAIL_PASSWORD),
-            'google_sheets': bool(GOOGLE_SHEET_KEY and GOOGLE_CREDENTIALS_JSON and SHEETS_AVAILABLE)
+            'google_sheets': bool(GOOGLE_SHEET_KEY),
+            'credentials_file': 'Using file path',
+            'credentials_path': CREDENTIALS_FILE_PATH,
+            'file_exists': os.path.exists(CREDENTIALS_FILE_PATH) if SHEETS_AVAILABLE else 'N/A'
         },
-        'endpoints': ['/', '/ping', '/health', '/test', '/submit', '/debug']
+        'endpoints': ['/', '/ping', '/health', '/test', '/debug', '/submit']
     })
 
 @app.route('/ping')
@@ -51,40 +56,74 @@ def health():
 
 @app.route('/test')
 def test():
-    """Check environment variables"""
+    """Check configuration"""
+    creds_file_exists = os.path.exists(CREDENTIALS_FILE_PATH) if SHEETS_AVAILABLE else False
+    
     return jsonify({
         'email_user': 'SET' if EMAIL_USER else 'NOT SET',
         'email_password': 'SET' if EMAIL_PASSWORD else 'NOT SET',
         'google_sheet_key': 'SET' if GOOGLE_SHEET_KEY else 'NOT SET',
-        'google_creds_json': 'SET' if GOOGLE_CREDENTIALS_JSON else 'NOT SET',
-        'creds_length': len(GOOGLE_CREDENTIALS_JSON) if GOOGLE_CREDENTIALS_JSON else 0,
+        'credentials_file': 'EXISTS' if creds_file_exists else 'NOT FOUND',
+        'credentials_path': CREDENTIALS_FILE_PATH,
         'sheets_library': 'AVAILABLE' if SHEETS_AVAILABLE else 'NOT AVAILABLE'
     })
 
 @app.route('/debug')
 def debug():
-    """Debug Google Sheets credentials"""
+    """Debug credentials file"""
     debug_info = {
-        'json_set': bool(GOOGLE_CREDENTIALS_JSON),
-        'json_length': len(GOOGLE_CREDENTIALS_JSON) if GOOGLE_CREDENTIALS_JSON else 0,
-        'first_50': GOOGLE_CREDENTIALS_JSON[:50] if GOOGLE_CREDENTIALS_JSON else '',
-        'last_50': GOOGLE_CREDENTIALS_JSON[-50:] if GOOGLE_CREDENTIALS_JSON else ''
+        'credentials_path': CREDENTIALS_FILE_PATH,
+        'file_exists': os.path.exists(CREDENTIALS_FILE_PATH),
+        'sheets_available': SHEETS_AVAILABLE
     }
     
-    if GOOGLE_CREDENTIALS_JSON:
+    if os.path.exists(CREDENTIALS_FILE_PATH):
         try:
-            creds_dict = json.loads(GOOGLE_CREDENTIALS_JSON)
-            debug_info['parse_success'] = True
-            debug_info['service_account'] = creds_dict.get('client_email', 'Not found')
-            debug_info['project_id'] = creds_dict.get('project_id', 'Not found')
-        except json.JSONDecodeError as e:
-            debug_info['parse_error'] = str(e)
-            debug_info['parse_success'] = False
+            with open(CREDENTIALS_FILE_PATH, 'r') as f:
+                content = f.read()
+                debug_info['file_size'] = len(content)
+                debug_info['file_readable'] = True
+                
+                # Try to parse as JSON
+                try:
+                    creds = json.loads(content)
+                    debug_info['json_valid'] = True
+                    debug_info['service_account'] = creds.get('client_email', 'Not found')
+                    debug_info['project_id'] = creds.get('project_id', 'Not found')
+                except json.JSONDecodeError as e:
+                    debug_info['json_valid'] = False
+                    debug_info['json_error'] = str(e)
+                    
+        except Exception as e:
+            debug_info['file_readable'] = False
+            debug_info['file_error'] = str(e)
+    else:
+        debug_info['file_exists'] = False
     
     return jsonify(debug_info)
 
+def load_credentials():
+    """Load credentials from file"""
+    if not os.path.exists(CREDENTIALS_FILE_PATH):
+        print(f"❌ Credentials file not found at: {CREDENTIALS_FILE_PATH}")
+        return None
+    
+    try:
+        with open(CREDENTIALS_FILE_PATH, 'r') as f:
+            credentials = json.load(f)
+        
+        print(f"✅ Loaded credentials for: {credentials.get('client_email', 'Unknown')}")
+        return credentials
+        
+    except json.JSONDecodeError as e:
+        print(f"❌ Failed to parse credentials JSON: {e}")
+        return None
+    except Exception as e:
+        print(f"❌ Error reading credentials file: {e}")
+        return None
+
 def save_to_google_sheets(data):
-    """Save form data to Google Sheets - FIXED VERSION"""
+    """Save form data to Google Sheets using credentials file"""
     if not SHEETS_AVAILABLE:
         print("❌ Google Sheets library not available")
         return False
@@ -93,50 +132,16 @@ def save_to_google_sheets(data):
         print("❌ GOOGLE_SHEET_KEY not set")
         return False
     
-    if not GOOGLE_CREDENTIALS_JSON:
-        print("❌ GOOGLE_CREDENTIALS_JSON not set")
-        return False
-    
     try:
         print("📊 Attempting to save to Google Sheets...")
-        print(f"JSON length: {len(GOOGLE_CREDENTIALS_JSON)}")
-        print(f"First 100 chars: {GOOGLE_CREDENTIALS_JSON[:100]}")
+        print(f"📁 Using credentials file: {CREDENTIALS_FILE_PATH}")
         
-        # Try multiple ways to parse the JSON
-        credentials_dict = None
-        
-        # Method 1: Direct JSON parse
-        try:
-            credentials_dict = json.loads(GOOGLE_CREDENTIALS_JSON)
-            print("✅ Method 1: Direct JSON parse successful")
-        except json.JSONDecodeError as e:
-            print(f"❌ Method 1 failed: {e}")
-            
-            # Method 2: Clean and try again
-            try:
-                # Replace escaped newlines with actual newlines
-                cleaned = GOOGLE_CREDENTIALS_JSON.replace('\\n', '\n')
-                credentials_dict = json.loads(cleaned)
-                print("✅ Method 2: Cleaned JSON parse successful")
-            except json.JSONDecodeError as e2:
-                print(f"❌ Method 2 failed: {e2}")
-                
-                # Method 3: Try base64 decode
-                try:
-                    import base64
-                    decoded = base64.b64decode(GOOGLE_CREDENTIALS_JSON).decode('utf-8')
-                    credentials_dict = json.loads(decoded)
-                    print("✅ Method 3: Base64 decode successful")
-                except Exception as e3:
-                    print(f"❌ Method 3 failed: {e3}")
-                    return False
-        
+        # Load credentials from file
+        credentials_dict = load_credentials()
         if not credentials_dict:
-            print("❌ Could not parse credentials")
             return False
         
         print(f"✅ Service Account: {credentials_dict.get('client_email', 'Unknown')}")
-        print(f"✅ Project ID: {credentials_dict.get('project_id', 'Unknown')}")
         
         # Setup Google Sheets
         scope = ["https://www.googleapis.com/auth/spreadsheets"]
@@ -149,7 +154,10 @@ def save_to_google_sheets(data):
         
         # Prepare data
         interests = data.get('interests', [])
-        interests_str = ', '.join(interests) if isinstance(interests, list) else str(interests)
+        if isinstance(interests, list):
+            interests_str = ', '.join(interests)
+        else:
+            interests_str = str(interests) if interests else ''
         
         row = [
             datetime.now().isoformat(),          # Timestamp
@@ -281,11 +289,10 @@ def submit_form():
         
         print(f"👤 Name: {data.get('fullName', 'Unknown')}")
         print(f"📧 Email: {data.get('email', 'No email')}")
-        print(f"🎓 Faculty: {data.get('faculty', 'Not specified')}")
         
         # Save to Google Sheets
         sheets_success = False
-        if GOOGLE_SHEET_KEY and GOOGLE_CREDENTIALS_JSON and SHEETS_AVAILABLE:
+        if GOOGLE_SHEET_KEY and SHEETS_AVAILABLE:
             sheets_success = save_to_google_sheets(data)
         else:
             print("⚠️ Google Sheets not configured or library missing")
@@ -328,9 +335,10 @@ if __name__ == '__main__':
     print("\n" + "="*60)
     print(f"🚀 Starting Form Backend on port {port}")
     print(f"📧 Email: {'CONFIGURED' if EMAIL_USER and EMAIL_PASSWORD else 'NOT CONFIGURED'}")
-    print(f"📊 Sheets: {'CONFIGURED' if GOOGLE_SHEET_KEY and GOOGLE_CREDENTIALS_JSON else 'NOT CONFIGURED'}")
+    print(f"📊 Sheets Key: {'SET' if GOOGLE_SHEET_KEY else 'NOT SET'}")
+    print(f"📁 Credentials File: {CREDENTIALS_FILE_PATH}")
+    print(f"📁 File Exists: {os.path.exists(CREDENTIALS_FILE_PATH)}")
     print(f"📚 Sheets Library: {'AVAILABLE' if SHEETS_AVAILABLE else 'MISSING'}")
-    print(f"🌍 Environment: {'Render' if os.getenv('RENDER') else 'Local'}")
     print("="*60 + "\n")
     
     # For Render deployment

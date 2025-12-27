@@ -1,19 +1,22 @@
 """
 COMPLETE WORKING Flask Backend for Form Submission
 FINAL PATH: /etc/secrets/nortiq-forms-65b5a63e6217.json
-UPDATED: Email function with timeout prevention
+UPDATED: Resend API for FAST email (no SMTP timeout)
 """
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import smtplib
 import os
 import json
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
 from datetime import datetime
 import time
-import threading
-from queue import Queue, Empty
+
+# Try to import Resend
+try:
+    import resend
+    RESEND_AVAILABLE = True
+except ImportError:
+    RESEND_AVAILABLE = False
+    print("Note: resend not installed - install with: pip install resend")
 
 # Try to import Google Sheets
 try:
@@ -27,16 +30,23 @@ except ImportError:
 app = Flask(__name__)
 CORS(app)
 
-# Environment variables
-EMAIL_USER = os.getenv("EMAIL_USER", "")
-EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD", "")
+# Environment variables - GET FROM ENV VARS
+RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")  # ⬅️ Set in Render env vars
 GOOGLE_SHEET_KEY = os.getenv("GOOGLE_SHEET_KEY", "")
+
+# Email settings
+FROM_EMAIL = "onboarding@resend.dev"  # Default Resend domain
+# OR use your verified domain: "noreply@yourdomain.com"
+
+# Initialize Resend if available
+if RESEND_AVAILABLE and RESEND_API_KEY:
+    resend.api_key = RESEND_API_KEY
+    print(f"✅ Resend API initialized with key: {RESEND_API_KEY[:10]}...")
+elif RESEND_AVAILABLE and not RESEND_API_KEY:
+    print("⚠️ Resend library available but RESEND_API_KEY not set in environment")
 
 # FINAL credentials file path - EXACT PATH
 CREDENTIALS_FILE_PATH = "/etc/secrets/nortiq-forms-65b5a63e6217.json"
-
-# Email queue for async processing
-email_queue = Queue()
 
 @app.route('/')
 def home():
@@ -44,7 +54,8 @@ def home():
         'status': 'ok',
         'service': 'Form Submission Backend - FINAL',
         'config': {
-            'email': bool(EMAIL_USER and EMAIL_PASSWORD),
+            'email': bool(RESEND_API_KEY),
+            'resend_library': 'AVAILABLE' if RESEND_AVAILABLE else 'NOT AVAILABLE',
             'google_sheets': bool(GOOGLE_SHEET_KEY),
             'credentials_file': 'nortiq-forms-65b5a63e6217.json',
             'credentials_path': CREDENTIALS_FILE_PATH,
@@ -68,8 +79,8 @@ def test():
     creds_file_exists = os.path.exists(CREDENTIALS_FILE_PATH) if SHEETS_AVAILABLE else False
     
     return jsonify({
-        'email_user': 'SET' if EMAIL_USER else 'NOT SET',
-        'email_password': 'SET' if EMAIL_PASSWORD else 'NOT SET',
+        'resend_api_key': 'SET' if RESEND_API_KEY else 'NOT SET',
+        'resend_library': 'AVAILABLE' if RESEND_AVAILABLE else 'NOT AVAILABLE',
         'google_sheet_key': 'SET' if GOOGLE_SHEET_KEY else 'NOT SET',
         'credentials_file': 'nortiq-forms-65b5a63e6217.json',
         'credentials_path': CREDENTIALS_FILE_PATH,
@@ -87,6 +98,10 @@ def debug():
         'credentials_path': CREDENTIALS_FILE_PATH,
         'file_exists': os.path.exists(CREDENTIALS_FILE_PATH),
         'sheets_available': SHEETS_AVAILABLE,
+        'resend_available': RESEND_AVAILABLE,
+        'resend_initialized': bool(RESEND_AVAILABLE and RESEND_API_KEY),
+        'resend_key_set': bool(RESEND_API_KEY),
+        'resend_key_preview': RESEND_API_KEY[:8] + '...' if RESEND_API_KEY and len(RESEND_API_KEY) > 8 else 'N/A',
         'server_time': time.time(),
         'render_environment': bool(os.getenv('RENDER'))
     }
@@ -300,18 +315,18 @@ def save_to_google_sheets(data):
         traceback.print_exc()
         return False
 
-def send_confirmation_email_async(to_email, name):
-    """Send confirmation email ASYNC - no timeout blocking"""
+def send_email_resend(to_email, name):
+    """Send email via Resend API (FAST - <1 second)"""
+    if not RESEND_AVAILABLE:
+        print("❌ Resend library not available")
+        return False
+    
+    if not RESEND_API_KEY:
+        print("❌ RESEND_API_KEY not set")
+        return False
+    
     try:
-        print(f"📧 [ASYNC] Starting email send to {to_email}...")
-        
-        if not EMAIL_USER or not EMAIL_PASSWORD:
-            print(f"❌ [ASYNC] Email credentials not configured")
-            return False
-        
-        # SMTP configuration with reduced timeouts
-        smtp_server = 'smtp.gmail.com'
-        smtp_port = 587
+        print(f"⚡ Resend email to {to_email}...")
         
         subject = "本日のブース訪問、ありがとうございます / Thanks for visiting our booth today!"
         
@@ -357,80 +372,29 @@ def send_confirmation_email_async(to_email, name):
         </div>
         """
         
-        msg = MIMEMultipart('alternative')
-        msg['Subject'] = subject
-        msg['From'] = EMAIL_USER
-        msg['To'] = to_email
-        msg.attach(MIMEText(html_content, 'html'))
+        # Send via Resend API
+        r = resend.Emails.send({
+            "from": "Kyowa Technologies <onboarding@resend.dev>",
+            "to": to_email,
+            "subject": subject,
+            "html": html_content
+        })
         
-        # SMTP with timeout settings
-        server = smtplib.SMTP(timeout=10)  # 10 second timeout
-        server.connect(smtp_server, smtp_port)
-        server.starttls()
-        server.login(EMAIL_USER, EMAIL_PASSWORD)
-        server.send_message(msg)
-        server.quit()
-        
-        print(f"✅ [ASYNC] Email sent to {to_email}")
+        print(f"✅ Resend email sent in <1s! ID: {r['id']}")
         return True
         
-    except smtplib.SMTPAuthenticationError:
-        print("❌ [ASYNC] SMTP Auth Failed: Use App Password, not regular password")
-        return False
-    except smtplib.SMTPException as e:
-        print(f"❌ [ASYNC] SMTP Error: {e}")
-        return False
     except Exception as e:
-        print(f"❌ [ASYNC] Unexpected error: {type(e).__name__}: {str(e)[:100]}")
-        return False
-
-def background_email_worker():
-    """Background worker for sending emails"""
-    while True:
-        try:
-            # Get email task from queue (with timeout)
-            task = email_queue.get(timeout=30)  # Wait 30 seconds for task
-            if task is None:  # Sentinel to stop worker
-                break
-                
-            to_email, name = task
-            send_confirmation_email_async(to_email, name)
-            email_queue.task_done()
-            
-        except Empty:
-            # No tasks in queue, continue waiting
-            continue
-        except Exception as e:
-            print(f"❌ [WORKER] Error: {e}")
-            continue
-
-# Start background email worker thread
-email_worker_thread = threading.Thread(target=background_email_worker, daemon=True)
-email_worker_thread.start()
-print("✅ Background email worker started")
-
-def queue_email_task(to_email, name):
-    """Queue email task for background processing"""
-    if not to_email:
-        print("⚠️ No email address to queue")
-        return False
-    
-    try:
-        email_queue.put((to_email, name))
-        print(f"📨 [QUEUE] Email queued for {to_email}")
-        return True
-    except Exception as e:
-        print(f"❌ [QUEUE] Failed to queue email: {e}")
+        print(f"❌ Resend API error: {type(e).__name__}: {e}")
         return False
 
 @app.route('/submit', methods=['POST', 'OPTIONS'])
 def submit_form():
-    """Handle form submission - ASYNC EMAIL QUEUE VERSION"""
+    """Handle form submission - RESEND API VERSION"""
     if request.method == 'OPTIONS':
         return '', 200
     
     print("\n" + "="*60)
-    print("📝 FORM SUBMISSION - ASYNC EMAIL QUEUE")
+    print("📝 FORM SUBMISSION - RESEND API (FAST EMAIL)")
     print("="*60)
     
     try:
@@ -448,29 +412,29 @@ def submit_form():
         else:
             print("⚠️ Google Sheets: Not configured")
         
-        # Queue email for background sending (ASYNC - no timeout!)
-        email_queued = False
+        # Send email via Resend API (FAST - <1 second)
+        email_sent = False
         email = data.get('email', '')
         name = data.get('fullName', 'User')
         
         if email:
-            if EMAIL_USER and EMAIL_PASSWORD:
-                email_queued = queue_email_task(email, name)
-                print(f"📨 Email queued: {email_queued}")
+            if RESEND_API_KEY and RESEND_AVAILABLE:
+                email_sent = send_email_resend(email, name)
+                print(f"📧 Email sent via Resend: {email_sent}")
             else:
-                print("⚠️ Email: Not configured")
+                print("⚠️ Email: Resend API not configured")
         else:
             print("⚠️ Email: No address provided")
         
-        # Immediate response - don't wait for email
+        # Immediate response
         response = {
             'success': True,
-            'message': 'Form submitted successfully! Email queued for sending.',
+            'message': 'Form submitted successfully!',
             'sheets_saved': sheets_success,
-            'email_queued': email_queued,
-            'note': 'Email is being sent in the background',
+            'email_sent': email_sent,
+            'email_provider': 'Resend API' if email_sent else 'None',
             'timestamp': datetime.now().isoformat(),
-            'version': 'ASYNC-EMAIL-QUEUE',
+            'version': 'RESEND-API-FAST',
             'credentials_file': 'nortiq-forms-65b5a63e6217.json'
         }
         
@@ -488,15 +452,17 @@ def submit_form():
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 10000))
     print("\n" + "="*60)
-    print("🚀 FORM BACKEND - ASYNC EMAIL QUEUE VERSION")
+    print("🚀 FORM BACKEND - RESEND API VERSION (FAST EMAIL)")
     print("="*60)
     print(f"📍 Port: {port}")
-    print(f"📧 Email: {'✅ CONFIGURED' if EMAIL_USER and EMAIL_PASSWORD else '❌ NOT CONFIGURED'}")
+    print(f"🔑 Resend API: {'✅ CONFIGURED' if RESEND_API_KEY else '❌ NOT SET'}")
+    if RESEND_API_KEY:
+        print(f"   Key: {RESEND_API_KEY[:15]}...")
+    print(f"📚 Resend Lib: {'✅ AVAILABLE' if RESEND_AVAILABLE else '❌ MISSING - pip install resend'}")
     print(f"📊 Sheets Key: {'✅ SET' if GOOGLE_SHEET_KEY else '❌ NOT SET'}")
     print(f"📁 Credentials: {CREDENTIALS_FILE_PATH}")
     print(f"📁 File Exists: {'✅ YES' if os.path.exists(CREDENTIALS_FILE_PATH) else '❌ NO - Upload to Render Secret Files'}")
     print(f"📚 Sheets Lib: {'✅ AVAILABLE' if SHEETS_AVAILABLE else '❌ MISSING'}")
-    print(f"📨 Email Queue: {'✅ ACTIVE' if email_worker_thread.is_alive() else '❌ INACTIVE'}")
     print("="*60)
     print("💡 Upload credentials to Render → Environment → Secret Files")
     print(f"💡 Mount Path: {CREDENTIALS_FILE_PATH}")

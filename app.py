@@ -267,17 +267,6 @@ def save_to_google_sheets(data):
         
         print(f"📝 Data: {row[:3]}...")
         
-        # Add headers if needed
-        try:
-            existing = worksheet.row_values(1)
-            if not existing or existing[0] != 'Timestamp':
-                headers = ['Timestamp', 'Full Name', 'Gender', 'Faculty', 
-                          'Desired Position', 'Year', 'Email', 'Interest', 'Note']
-                worksheet.insert_row(headers, 1)
-                print("✅ Added headers")
-        except Exception as e:
-            print(f"⚠️ Header check: {e}")
-        
         # Append row
         worksheet.append_row(row)
         print(f"✅ SUCCESS: Saved to Google Sheets!")

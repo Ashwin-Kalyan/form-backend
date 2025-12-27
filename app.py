@@ -257,15 +257,12 @@ def save_to_google_sheets(data):
             interests_str = str(interests) if interests else ''
         
         row = [
-            datetime.now().isoformat(),
             data.get('fullName', ''),
-            data.get('gender', ''),
-            data.get('faculty', ''),
             data.get('desiredPosition', ''),
             data.get('desiredYear', ''),
-            data.get('email', ''),
             interests_str,
-            data.get('comments', '')
+            data.get('comments', ''),
+            datetime.now().isoformat()
         ]
         
         print(f"📝 Data: {row[:3]}...")

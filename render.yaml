@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: nortiq-forms-backend
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --config gunicorn_config.py
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: EMAIL_USER
+        sync: false
+      - key: EMAIL_PASSWORD
+        sync: false
+      - key: GOOGLE_SHEET_KEY
+        sync: false
+      - key: GOOGLE_CREDENTIALS_JSON
+        sync: false
+      - key: GOOGLE_CREDENTIALS_PATH
+        value: credentials.json
+        sync: false
+

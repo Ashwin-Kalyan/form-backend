@@ -277,13 +277,15 @@ def save_to_google_sheets(data):
         else:
             interests_str = str(interests) if interests else ''
         
+        # Row order: 氏名 | メール | 希望職種 | 就職希望年度 | 追加情報 | 要望 | 登録日時
         row = [
-            data.get('fullName', ''),
-            data.get('desiredPosition', ''),
-            data.get('desiredYear', ''),
-            interests_str,
-            data.get('comments', ''),
-            datetime.now().isoformat()
+            data.get('fullName', ''),        # 氏名 (Name)
+            data.get('email', ''),           # メール (Email)
+            data.get('desiredPosition', ''), # 希望職種 (Desired Job Type)
+            data.get('desiredYear', ''),     # 就職希望年度 (Year of Employment Desired)
+            interests_str,                   # 追加情報 (Additional Information)
+            data.get('comments', ''),        # 要望 (Requests)
+            datetime.now().isoformat()       # 登録日時 (Registration Date/Time)
         ]
         
         print(f"📝 Data: {row[:3]}...")

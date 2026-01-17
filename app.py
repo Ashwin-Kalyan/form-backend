@@ -31,7 +31,7 @@ app = Flask(__name__)
 CORS(app)
 
 # Environment variables - GET FROM ENV VARS
-RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")  # ⬅️ Set in Render env vars
+RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")  
 GOOGLE_SHEET_KEY = os.getenv("GOOGLE_SHEET_KEY", "")
 
 # Email settings
